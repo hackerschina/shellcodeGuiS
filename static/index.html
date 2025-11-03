@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Donut Shellcode 转换工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#3b82f6',
+                        secondary: '#10b981',
+                        dark: '#1e293b',
+                        light: '#f8fafc',
+                        danger: '#ef4444',
+                        warning: '#f59e0b',
+                        info: '#3b82f6',
+                    },
+                    fontFamily: {
+                        inter: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer utilities {
+            .content-auto {
+                content-visibility: auto;
+            }
+            .glassmorphism {
+                @apply bg-white/10 backdrop-blur-md border border-white/20;
+            }
+            .card-hover {
+                @apply transition-all duration-300 hover:shadow-lg hover:-translate-y-1;
+            }
+            .btn-primary {
+                @apply bg-primary text-white py-2 px-4 rounded-lg shadow transition-all duration-300 hover:bg-primary/90 hover:shadow-md active:scale-95;
+            }
+            .btn-secondary {
+                @apply bg-secondary text-white py-2 px-4 rounded-lg shadow transition-all duration-300 hover:bg-secondary/90 hover:shadow-md active:scale-95;
+            }
+            .input-field {
+                @apply w-full px-4 py-2 rounded-lg border border-gray-300 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all duration-300;
+            }
+            .select-field {
+                @apply w-full px-4 py-2 rounded-lg border border-gray-300 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all duration-300 appearance-none bg-white;
+            }
+            .code-editor {
+                @apply w-full h-full p-4 rounded-lg border border-gray-300 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all duration-300 font-mono text-sm bg-gray-50;
+            }
+            .tab-active {
+                @apply border-b-2 border-primary text-primary;
+            }
+        }
+    </style>
+</head>
+<body class="font-inter bg-gray-50 min-h-screen flex flex-col">
+    <!-- 顶部导航 -->
+    <nav class="bg-white shadow-sm sticky top-0 z-50">
+        <div class="container mx-auto px-4 py-3 flex justify-between items-center">
+            <div class="flex items-center space-x-2">
+                <i class="fa fa-code text-primary text-2xl"></i>
+                <h1 class="text-xl font-bold text-dark">Donut Shellcode 转换工具</h1>
+            </div>
+            <div class="flex items-center space-x-4">
+                <a href="https://github.com/TheWover/donut" target="_blank" class="text-gray-600 hover:text-primary transition-colors">
+                    <i class="fa fa-github text-xl"></i>
+                </a>
+                <button id="theme-toggle" class="text-gray-600 hover:text-primary transition-colors">
+                    <i class="fa fa-moon-o text-xl"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 主要内容 -->
+    <main class="flex-grow container mx-auto px-4 py-8">
+        <!-- 介绍卡片 -->
+        <div class="mb-8 bg-gradient-to-r from-primary/10 to-secondary/10 rounded-xl p-6 shadow-sm">
+            <div class="flex flex-col md:flex-row items-center justify-between">
+                <div class="mb-4 md:mb-0">
+                    <h2 class="text-2xl font-bold text-dark mb-2">一站式 Shellcode 处理解决方案</h2>
+                    <p class="text-gray-600">基于 Donut 工具，提供便捷的 Shellcode 转换和加载器生成功能</p>
+                </div>
+                <div class="flex space-x-3">
+                    <a href="#converter" class="btn-primary">
+                        <i class="fa fa-exchange mr-2"></i>转换工具
+                    </a>
+                    <a href="#loader" class="btn-secondary">
+                        <i class="fa fa-cogs mr-2"></i>加载器生成
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能选项卡 -->
+        <div class="mb-8">
+            <div class="border-b border-gray-200">
+                <ul class="flex flex-wrap -mb-px text-sm font-medium text-gray-500">
+                    <li class="mr-2">
+                        <a href="#converter" id="tab-converter" class="inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-primary hover:border-primary/30 tab-active">
+                            <i class="fa fa-magic mr-2"></i>Shellcode 转换
+                        </a>
+                    </li>
+                    <li class="mr-2">
+                        <a href="#loader" id="tab-loader" class="inline-block p-4 border-b-2 border-transparent rounded-t-lg hover:text-primary hover:border-primary/30">
+                            <i class="fa fa-rocket mr-2"></i>加载器生成
+                        </a>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Shellcode 转换选项卡内容 -->
+            <div id="converter" class="bg-white rounded-b-lg shadow-sm p-6">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- 左侧控制面板 -->
+                    <div class="space-y-6">
+                        <div>
+                            <h3 class="text-lg font-semibold mb-3 text-dark">文件上传</h3>
+                            <div class="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-primary transition-colors">
+                                <input type="file" id="file-upload" class="hidden">
+                                <label for="file-upload" class="cursor-pointer">
+                                    <i class="fa fa-cloud-upload text-3xl text-gray-400 mb-2"></i>
+                                    <p class="text-gray-600 mb-1">点击上传文件</p>
+                                    <p class="text-xs text-gray-500">支持 .NET 程序集、PE文件、脚本文件等</p>
+                                </label>
+                                <div id="file-info" class="hidden mt-4 p-3 bg-gray-50 rounded-lg">
+                                    <p id="file-name" class="font-medium text-dark"></p>
+                                    <p id="file-size" class="text-sm text-gray-500"></p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <h3 class="text-lg font-semibold mb-3 text-dark">转换选项</h3>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">目标架构</label>
+                                <div class="relative">
+                                    <select id="arch" class="select-field pr-10">
+                                        <option value="1">x86</option>
+                                        <option value="2">x64</option>
+                                        <option value="3">x84 (AMD64+x86)</option>
+                                    </select>
+                                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                                        <i class="fa fa-chevron-down text-xs"></i>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">输出格式</label>
+                                <div class="relative">
+                                    <select id="format" class="select-field pr-10">
+                                        <option value="1">C 语言数组</option>
+                                        <option value="2">Ruby 数组</option>
+                                        <option value="3">Python 数组</option>
+                                        <option value="4">PowerShell 字符串</option>
+                                        <option value="5">Base64 字符串</option>
+                                        <option value="6">C# 数组</option>
+                                        <option value="7">十六进制字符串</option>
+                                        <option value="8">UUID 字符串</option>
+                                    </select>
+                                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                                        <i class="fa fa-chevron-down text-xs"></i>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">压缩方式</label>
+                                <div class="relative">
+                                    <select id="compression" class="select-field pr-10">
+                                        <option value="0">无压缩</option>
+                                        <option value="1">aPLib</option>
+                                        <option value="2">LZNT1</option>
+                                        <option value="3">Xpress</option>
+                                        <option value="4">Xpress Huffman</option>
+                                    </select>
+                                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                                        <i class="fa fa-chevron-down text-xs"></i>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">绕过措施</label>
+                                <div class="relative">
+                                    <select id="bypass" class="select-field pr-10">
+                                        <option value="0">无</option>
+                                        <option value="1">ETW</option>
+                                        <option value="2">AMSI</option>
+                                        <option value="3">ETW + AMSI</option>
+                                    </select>
+                                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                                        <i class="fa fa-chevron-down text-xs"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <h3 class="text-lg font-semibold mb-3 text-dark">高级选项</h3>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">模块名称（可选）</label>
+                                <input type="text" id="module-name" class="input-field" placeholder="自定义模块名称">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">入口点（可选）</label>
+                                <input type="text" id="entry-point" class="input-field" placeholder="如 Main 或 Class.Method">
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">参数（可选）</label>
+                                <input type="text" id="param" class="input-field" placeholder="传递给模块的参数">
+                            </div>
+
+                            <div>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="exit-thread" class="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">执行后挂起线程而不退出</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <button id="convert-btn" class="btn-primary w-full" disabled>
+                            <i class="fa fa-magic mr-2"></i>转换为 Shellcode
+                        </button>
+                    </div>
+
+                    <!-- 右侧结果显示 -->
+                    <div class="lg:col-span-2 space-y-6">
+                        <div>
+                            <div class="flex justify-between items-center mb-3">
+                                <h3 class="text-lg font-semibold text-dark">转换结果</h3>
+                                <div class="flex space-x-2">
+                                    <button id="copy-result" class="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+                                        <i class="fa fa-copy mr-1"></i>复制
+                                    </button>
+                                    <button id="download-result" class="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors" disabled>
+                                        <i class="fa fa-download mr-1"></i>下载
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="relative h-[400px]">
+                                <textarea id="result-code" class="code-editor" readonly placeholder="转换后的 Shellcode 将显示在这里..."></textarea>
+                                <div id="loading-overlay" class="hidden absolute inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center">
+                                    <div class="text-center">
+                                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-primary mb-2"></div>
+                                        <p class="text-gray-600">转换中...</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <h3 class="text-lg font-semibold mb-3 text-dark">转换日志</h3>
+                            <div class="h-[200px] overflow-y-auto p-4 bg-gray-50 rounded-lg border border-gray-200 text-sm font-mono">
+                                <pre id="convert-log" class="whitespace-pre-wrap text-gray-700">准备就绪，等待上传文件并转换...</pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 加载器生成选项卡内容 -->
+            <div id="loader" class="hidden bg-white rounded-b-lg shadow-sm p-6">
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- 左侧控制面板 -->
+                    <div class="space-y-6">
+                        <div>
+                            <h3 class="text-lg font-semibold mb-3 text-dark">Shellcode 输入</h3>
+                            
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Shellcode 类型</label>
+                                    <div class="flex space-x-2">
+                                        <label class="inline-flex items-center">
+                                            <input type="radio" name="shellcode-type" value="hex" class="h-4 w-4 text-primary focus:ring-primary border-gray-300" checked>
+                                            <span class="ml-2 text-sm text-gray-700">十六进制</span>
+                                        </label>
+                                        <label class="inline-flex items-center">
+                                            <input type="radio" name="shellcode-type" value="base64" class="h-4 w-4 text-primary focus:ring-primary border-gray-300">
+                                            <span class="ml-2 text-sm text-gray-700">Base64</span>
+                                        </label>
+                                        <label class="inline-flex items-center">
+                                            <input type="radio" name="shellcode-type" value="file" class="h-4 w-4 text-primary focus:ring-primary border-gray-300">
+                                            <span class="ml-2 text-sm text-gray-700">文件</span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div id="file-input-container" class="hidden">
+                                    <div class="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-primary transition-colors">
+                                        <input type="file" id="shellcode-file-upload" class="hidden">
+                                        <label for="shellcode-file-upload" class="cursor-pointer">
+                                            <i class="fa fa-file-text-o text-2xl text-gray-400 mb-2"></i>
+                                            <p class="text-gray-600">上传 Shellcode 文件</p>
+                                        </label>
+                                        <div id="shellcode-file-info" class="hidden mt-4 p-3 bg-gray-50 rounded-lg">
+                                            <p id="shellcode-file-name" class="font-medium text-dark"></p>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div id="text-input-container">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Shellcode 内容</label>
+                                    <textarea id="shellcode-text" class="input-field h-32" placeholder="请粘贴 Shellcode 内容..."></textarea>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-4">
+                            <h3 class="text-lg font-semibold mb-3 text-dark">加载器选项</h3>
+                            
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">输出语言</label>
+                                <div class="relative">
+                                    <select id="loader-language" class="select-field pr-10">
+                                        <option value="c">C 语言</option>
+                                        <option value="go">Go 语言</option>
+                                        <option value="rust">Rust 语言</option>
+                                        <option value="python">Python</option>
+                                    </select>
+                                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                                        <i class="fa fa-chevron-down text-xs"></i>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button id="generate-loader-btn" class="btn-secondary w-full">
+                            <i class="fa fa-cogs mr-2"></i>生成加载器
+                        </button>
+                    </div>
+
+                    <!-- 右侧结果显示 -->
+                    <div class="lg:col-span-2 space-y-6">
+                        <div>
+                            <div class="flex justify-between items-center mb-3">
+                                <h3 class="text-lg font-semibold text-dark">加载器代码</h3>
+                                <div class="flex space-x-2">
+                                    <button id="copy-loader" class="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+                                        <i class="fa fa-copy mr-1"></i>复制
+                                    </button>
+                                    <button id="download-loader" class="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors" disabled>
+                                        <i class="fa fa-download mr-1"></i>下载
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="relative h-[500px]">
+                                <textarea id="loader-code" class="code-editor" readonly placeholder="生成的加载器代码将显示在这里..."></textarea>
+                                <div id="loader-loading-overlay" class="hidden absolute inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center">
+                                    <div class="text-center">
+                                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-secondary mb-2"></div>
+                                        <p class="text-gray-600">生成中...</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 统计和信息卡片 -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white rounded-xl shadow-sm p-6 card-hover">
+                <div class="flex items-center space-x-4">
+                    <div class="w-12 h-12 bg-primary/10 rounded-lg flex items-center justify-center">
+                        <i class="fa fa-code-fork text-primary text-xl"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-2xl font-bold text-dark">多格式支持</h3>
+                        <p class="text-gray-600">8种输出格式</p>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm p-6 card-hover">
+                <div class="flex items-center space-x-4">
+                    <div class="w-12 h-12 bg-secondary/10 rounded-lg flex items-center justify-center">
+                        <i class="fa fa-shield text-secondary text-xl"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-2xl font-bold text-dark">安全特性</h3>
+                        <p class="text-gray-600">AMSI/ETW 绕过</p>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm p-6 card-hover">
+                <div class="flex items-center space-x-4">
+                    <div class="w-12 h-12 bg-warning/10 rounded-lg flex items-center justify-center">
+                        <i class="fa fa-cogs text-warning text-xl"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-2xl font-bold text-dark">多语言加载器</h3>
+                        <p class="text-gray-600">4种编程语言</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- 页脚 -->
+    <footer class="bg-white border-t border-gray-200 py-6">
+        <div class="container mx-auto px-4">
+            <div class="flex flex-col md:flex-row justify-between items-center">
+                <div class="mb-4 md:mb-0">
+                    <p class="text-gray-600 text-sm">基于 <a href="https://github.com/TheWover/donut" target="_blank" class="text-primary hover:underline">Donut</a> 项目构建</p>
+                </div>
+                <div class="flex space-x-6">
+                    <a href="#" class="text-gray-500 hover:text-primary transition-colors">
+                        <i class="fa fa-question-circle"></i> 帮助
+                    </a>
+                    <a href="#" class="text-gray-500 hover:text-primary transition-colors">
+                        <i class="fa fa-info-circle"></i> 关于
+                    </a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <!-- 通知组件 -->
+    <div id="notification" class="fixed bottom-4 right-4 p-4 rounded-lg shadow-lg transform translate-y-20 opacity-0 transition-all duration-300 z-50"></div>
+
+    <script>
+        // 当前上传的文件名
+        let currentFilename = null;
+        let shellcodeFilename = null;
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            // 选项卡切换
+            const tabConverter = document.getElementById('tab-converter');
+            const tabLoader = document.getElementById('tab-loader');
+            const converterDiv = document.getElementById('converter');
+            const loaderDiv = document.getElementById('loader');
+
+            tabConverter.addEventListener('click', function(e) {
+                e.preventDefault();
+                tabConverter.classList.add('tab-active');
+                tabLoader.classList.remove('tab-active');
+                converterDiv.classList.remove('hidden');
+                loaderDiv.classList.add('hidden');
+            });
+
+            tabLoader.addEventListener('click', function(e) {
+                e.preventDefault();
+                tabLoader.classList.add('tab-active');
+                tabConverter.classList.remove('tab-active');
+                loaderDiv.classList.remove('hidden');
+                converterDiv.classList.add('hidden');
+            });
+
+            // 文件上传处理
+            const fileUpload = document.getElementById('file-upload');
+            const fileInfo = document.getElementById('file-info');
+            const fileName = document.getElementById('file-name');
+            const fileSize = document.getElementById('file-size');
+            const convertBtn = document.getElementById('convert-btn');
+
+            fileUpload.addEventListener('change', function(e) {
+                if (this.files && this.files[0]) {
+                    const file = this.files[0];
+                    
+                    // 上传文件到服务器
+                    const formData = new FormData();
+                    formData.append('file', file);
+
+                    fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            showNotification('错误', data.error, 'danger');
+                            return;
+                        }
+
+                        currentFilename = data.filename;
+                        fileName.textContent = file.name;
+                        fileSize.textContent = formatFileSize(file.size);
+                        fileInfo.classList.remove('hidden');
+                        convertBtn.disabled = false;
+                        showNotification('成功', '文件上传成功', 'success');
+                    })
+                    .catch(error => {
+                        showNotification('错误', '文件上传失败', 'danger');
+                        console.error('上传错误:', error);
+                    });
+                }
+            });
+
+            // Shellcode 文件上传处理
+            const shellcodeFileUpload = document.getElementById('shellcode-file-upload');
+            const shellcodeFileInfo = document.getElementById('shellcode-file-info');
+            const shellcodeFileName = document.getElementById('shellcode-file-name');
+
+            shellcodeFileUpload.addEventListener('change', function(e) {
+                if (this.files && this.files[0]) {
+                    const file = this.files[0];
+                    
+                    // 上传文件到服务器
+                    const formData = new FormData();
+                    formData.append('file', file);
+
+                    fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            showNotification('错误', data.error, 'danger');
+                            return;
+                        }
+
+                        shellcodeFilename = data.filename;
+                        shellcodeFileName.textContent = file.name;
+                        shellcodeFileInfo.classList.remove('hidden');
+                        showNotification('成功', '文件上传成功', 'success');
+                    })
+                    .catch(error => {
+                        showNotification('错误', '文件上传失败', 'danger');
+                        console.error('上传错误:', error);
+                    });
+                }
+            });
+
+            // Shellcode 类型切换
+            const shellcodeTypeRadios = document.querySelectorAll('input[name="shellcode-type"]');
+            const fileInputContainer = document.getElementById('file-input-container');
+            const textInputContainer = document.getElementById('text-input-container');
+
+            shellcodeTypeRadios.forEach(radio => {
+                radio.addEventListener('change', function() {
+                    if (this.value === 'file') {
+                        fileInputContainer.classList.remove('hidden');
+                        textInputContainer.classList.add('hidden');
+                    } else {
+                        fileInputContainer.classList.add('hidden');
+                        textInputContainer.classList.remove('hidden');
+                    }
+                });
+            });
+
+            // 转换按钮点击
+            convertBtn.addEventListener('click', function() {
+                if (!currentFilename) {
+                    showNotification('错误', '请先上传文件', 'danger');
+                    return;
+                }
+
+                const loadingOverlay = document.getElementById('loading-overlay');
+                const resultCode = document.getElementById('result-code');
+                const convertLog = document.getElementById('convert-log');
+                const downloadResult = document.getElementById('download-result');
+
+                loadingOverlay.classList.remove('hidden');
+                convertLog.textContent = '开始转换...';
+                downloadResult.disabled = true;
+
+                // 获取表单数据
+                const formData = new FormData();
+                formData.append('inputFile', currentFilename);
+                formData.append('arch', document.getElementById('arch').value);
+                formData.append('format', document.getElementById('format').value);
+                formData.append('compression', document.getElementById('compression').value);
+                formData.append('bypass', document.getElementById('bypass').value);
+                formData.append('moduleName', document.getElementById('module-name').value);
+                formData.append('entryPoint', document.getElementById('entry-point').value);
+                formData.append('param', document.getElementById('param').value);
+                formData.append('exitThread', document.getElementById('exit-thread').checked ? '1' : '0');
+
+                fetch('/api/convert', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    loadingOverlay.classList.add('hidden');
+                    
+                    if (data.error) {
+                        convertLog.textContent = `错误: ${data.error}\n${data.stderr || ''}`;
+                        showNotification('错误', '转换失败', 'danger');
+                        return;
+                    }
+
+                    // 更新日志
+                    convertLog.textContent = data.output || '转换成功';
+                    
+                    // 更新结果
+                    if (data.shellcode) {
+                        resultCode.value = data.shellcode;
+                        
+                        // 如果有文件，可以下载
+                        if (data.hasFile && data.filename) {
+                            downloadResult.disabled = false;
+                            downloadResult.onclick = function() {
+                                window.location.href = `/api/download/${data.filename}`;
+                            };
+                        }
+                        
+                        showNotification('成功', 'Shellcode 转换成功', 'success');
+                    } else {
+                        showNotification('警告', '未生成 Shellcode 内容', 'warning');
+                    }
+                })
+                .catch(error => {
+                    loadingOverlay.classList.add('hidden');
+                    convertLog.textContent = `请求错误: ${error.message}`;
+                    showNotification('错误', '转换请求失败', 'danger');
+                    console.error('转换错误:', error);
+                });
+            });
+
+            // 生成加载器按钮点击
+            const generateLoaderBtn = document.getElementById('generate-loader-btn');
+            const loaderLoadingOverlay = document.getElementById('loader-loading-overlay');
+            const loaderCode = document.getElementById('loader-code');
+            const downloadLoader = document.getElementById('download-loader');
+
+            generateLoaderBtn.addEventListener('click', function() {
+                let shellcodeContent = '';
+                let shellcodeType = '';
+
+                // 确定 shellcode 类型和内容
+                const selectedType = document.querySelector('input[name="shellcode-type"]:checked').value;
+                
+                if (selectedType === 'file') {
+                    if (!shellcodeFilename) {
+                        showNotification('错误', '请先上传 Shellcode 文件', 'danger');
+                        return;
+                    }
+                    shellcodeContent = shellcodeFilename;
+                    shellcodeType = 'file';
+                } else {
+                    const textContent = document.getElementById('shellcode-text').value.trim();
+                    if (!textContent) {
+                        showNotification('错误', '请输入 Shellcode 内容', 'danger');
+                        return;
+                    }
+                    shellcodeContent = textContent;
+                    shellcodeType = selectedType;
+                }
+
+                const outputFormat = document.getElementById('loader-language').value;
+
+                loaderLoadingOverlay.classList.remove('hidden');
+                downloadLoader.disabled = true;
+
+                const formData = new FormData();
+                formData.append('shellcode', shellcodeContent);
+                formData.append('shellcodeType', shellcodeType);
+                formData.append('outputFormat', outputFormat);
+
+                fetch('/api/generate-loader', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    loaderLoadingOverlay.classList.add('hidden');
+                    
+                    if (data.error) {
+                        showNotification('错误', data.error, 'danger');
+                        return;
+                    }
+
+                    if (data.loaderCode) {
+                        loaderCode.value = data.loaderCode;
+                        
+                        if (data.filename) {
+                            downloadLoader.disabled = false;
+                            downloadLoader.onclick = function() {
+                                window.location.href = `/api/download/${data.filename}`;
+                            };
+                        }
+                        
+                        showNotification('成功', '加载器生成成功', 'success');
+                    } else {
+                        showNotification('错误', '加载器生成失败', 'danger');
+                    }
+                })
+                .catch(error => {
+                    loaderLoadingOverlay.classList.add('hidden');
+                    showNotification('错误', '加载器生成请求失败', 'danger');
+                    console.error('生成错误:', error);
+                });
+            });
+
+            // 复制功能
+            document.getElementById('copy-result').addEventListener('click', function() {
+                const resultCode = document.getElementById('result-code');
+                resultCode.select();
+                document.execCommand('copy');
+                showNotification('成功', '已复制到剪贴板', 'success');
+            });
+
+            document.getElementById('copy-loader').addEventListener('click', function() {
+                const loaderCode = document.getElementById('loader-code');
+                loaderCode.select();
+                document.execCommand('copy');
+                showNotification('成功', '已复制到剪贴板', 'success');
+            });
+
+            // 主题切换 (简单实现)
+            document.getElementById('theme-toggle').addEventListener('click', function() {
+                this.innerHTML = this.innerHTML.includes('moon') ? 
+                    '<i class="fa fa-sun-o text-xl"></i>' : 
+                    '<i class="fa fa-moon-o text-xl"></i>';
+                showNotification('提示', '主题切换功能正在开发中', 'info');
+            });
+        });
+
+        // 辅助函数
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function showNotification(title, message, type = 'info') {
+            const notification = document.getElementById('notification');
+            
+            // 设置样式
+            notification.className = 'fixed bottom-4 right-4 p-4 rounded-lg shadow-lg transform translate-y-0 opacity-100 transition-all duration-300 z-50';
+            
+            // 根据类型设置不同背景色
+            switch(type) {
+                case 'success':
+                    notification.classList.add('bg-green-500', 'text-white');
+                    break;
+                case 'error':
+                    notification.classList.add('bg-danger', 'text-white');
+                    break;
+                case 'warning':
+                    notification.classList.add('bg-warning', 'text-white');
+                    break;
+                case 'info':
+                default:
+                    notification.classList.add('bg-primary', 'text-white');
+                    break;
+            }
+
+            // 设置内容
+            notification.innerHTML = `
+                <div class="flex items-start">
+                    <div class="mr-3">
+                        <i class="fa fa-${type === 'success' ? 'check' : type === 'error' ? 'times' : type === 'warning' ? 'exclamation' : 'info'}-circle text-lg"></i>
+                    </div>
+                    <div>
+                        <h4 class="font-bold">${title}</h4>
+                        <p>${message}</p>
+                    </div>
+                </div>
+            `;
+
+            // 3秒后自动消失
+            setTimeout(() => {
+                notification.classList.add('translate-y-20', 'opacity-0');
+                setTimeout(() => {
+                    notification.classList.remove('bg-green-500', 'bg-danger', 'bg-warning', 'bg-primary', 'text-white');
+                }, 300);
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
