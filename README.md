@@ -1,10 +1,16 @@
-# Donut Web - ShellcodeGus工具
-本工具是基于donut项目开发的webGui界面的shellcode转换器，方便shellcode转换以及加载器自动生成！
-喜欢本工具的话可以给个star，感谢！持续开发中...
 # Donut Web - Shellcode 转换和加载器生成工具
 
 一个基于 Go 语言和 [Donut](https://github.com/TheWover/donut) 项目的 Web 界面工具，用于将 .NET 程序集、PE 文件等转换为 shellcode，并生成多种编程语言的加载器。
-
+# v1.2功能
+1.修复部分编码乱码问题
+2.增强生成异常处理
+3.生成的所有文件均在dount web目录中均可查看
+4.关于加载器的问题，需要自己来编译，示例中可能还存在一些问题
+5.本框架只是演示框架，当然可生成相关的shellcode编码
+6.你可正常使用本框架生成shellcode
+7.还存在一些问题，你可以进行提交或你自行处理你的功能逻辑以及一些其他功能的优化
+8.可以更好fork该项目用于你自身产环境 
+8.本工具完全开源！
 ## 功能特性
 
 ### Shellcode 转换功能

